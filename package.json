@@ -1,0 +1,116 @@
+{
+  "name": "codetime-ai",
+  "displayName": "CodeTime AI",
+  "description": "VS Code extension that tracks coding activity, detects focus sessions, generates AI-powered weekly insights, and visualizes developer habits through an interactive dashboard.",
+  "version": "1.0.0",
+  "publisher": "codetime",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Data Science"
+  ],
+  "keywords": [
+    "time tracker",
+    "productivity",
+    "AI",
+    "coding stats",
+    "developer tools",
+    "focus sessions",
+    "analytics"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codetime-ai.openDashboard",
+        "title": "CodeTime: Open Dashboard"
+      },
+      {
+        "command": "codetime-ai.showDashboard",
+        "title": "CodeTime AI: Show Dashboard"
+      },
+      {
+        "command": "codetime-ai.generateWeeklyInsight",
+        "title": "CodeTime: Generate Weekly Insight"
+      },
+      {
+        "command": "codetime-ai.openSettings",
+        "title": "CodeTime: Open Settings"
+      },
+      {
+        "command": "codetime-ai.exportJson",
+        "title": "CodeTime: Export to JSON"
+      },
+      {
+        "command": "codetime-ai.exportCsv",
+        "title": "CodeTime: Export to CSV"
+      }
+    ],
+    "configuration": {
+      "title": "CodeTime AI",
+      "properties": {
+        "codetime.anthropicApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Anthropic API key used to generate weekly AI coding insights.",
+          "order": 1
+        },
+        "codetime.inactivityTimeout": {
+          "type": "number",
+          "default": 60,
+          "minimum": 10,
+          "maximum": 300,
+          "description": "Seconds of inactivity before the timer pauses.",
+          "order": 2
+        },
+        "codetime.focusSessionMinutes": {
+          "type": "number",
+          "default": 25,
+          "minimum": 5,
+          "maximum": 120,
+          "description": "Minimum uninterrupted minutes to qualify as a focus session.",
+          "order": 3
+        },
+        "codetime.dailyGoalMinutes": {
+          "type": "number",
+          "default": 120,
+          "minimum": 15,
+          "maximum": 720,
+          "description": "Daily coding goal in minutes. Shown as a progress bar in the dashboard.",
+          "order": 4
+        },
+        "codetime.enableMilestoneNotifications": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show notifications when daily coding milestones are reached.",
+          "order": 5
+        },
+        "codetime.enableFocusNotifications": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a notification when a focus session is completed.",
+          "order": 6
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "tsc --noEmit -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0"
+  }
+}
