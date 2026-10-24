@@ -2,7 +2,7 @@
   "name": "codetime-ai",
   "displayName": "CodeTime AI",
   "description": "VS Code extension that tracks coding activity, detects focus sessions, generates AI-powered weekly insights, and visualizes developer habits through an interactive dashboard.",
-  "version": "1.0.0",
+  "version": "1.1.1",
   "publisher": "codetime",
   "engines": {
     "vscode": "^1.85.0"
@@ -49,6 +49,18 @@
       {
         "command": "codetime-ai.exportCsv",
         "title": "CodeTime: Export to CSV"
+      },
+      {
+        "command": "codetime-ai.pauseTracking",
+        "title": "CodeTime: Pause Tracking"
+      },
+      {
+        "command": "codetime-ai.resumeTracking",
+        "title": "CodeTime: Resume Tracking"
+      },
+      {
+        "command": "codetime-ai.toggleTracking",
+        "title": "CodeTime: Toggle Tracking"
       }
     ],
     "configuration": {
@@ -97,13 +109,30 @@
           "order": 6
         }
       }
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "codetime-ai.pauseTracking",
+          "when": "!codetime-ai.trackingPaused"
+        },
+        {
+          "command": "codetime-ai.resumeTracking",
+          "when": "codetime-ai.trackingPaused"
+        },
+        {
+          "command": "codetime-ai.toggleTracking",
+          "when": "false"
+        }
+      ]
     }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "lint": "tsc --noEmit -p ./"
+    "lint": "tsc --noEmit -p ./",
+    "test": "npm run compile && node --test tests/*.test.cjs"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

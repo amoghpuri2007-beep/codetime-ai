@@ -10,12 +10,14 @@ import { LanguageTracker } from './trackers/LanguageTracker';
 import { ProjectTracker } from './trackers/ProjectTracker';
 import { formatDurationShort } from './utils/timeUtils';
 import { ExportManager } from './utils/ExportManager';
+import { formatTrackingStatus } from './core/trackingStatus';
 
-const STATUS_BAR_UPDATE_INTERVAL_MS = 30_000;
+const STATUS_BAR_UPDATE_INTERVAL_MS = 1_000;
 
 let sessionManager: SessionManager | undefined;
 let activityTracker: ActivityTracker | undefined;
 let statusBarItem: vscode.StatusBarItem | undefined;
+let trackingControlItem: vscode.StatusBarItem | undefined;
 let statusBarUpdateTimer: ReturnType<typeof setInterval> | undefined;
 
 /**
@@ -28,9 +30,21 @@ function updateStatusBar(storageManager: StorageManager): void {
     return;
   }
 
-  const todaySeconds = storageManager.getTodayStats().totalSeconds;
-  statusBarItem.text = `$(clock) ${formatDurationShort(todaySeconds)} today`;
-  statusBarItem.tooltip = 'CodeTime AI — click to open dashboard';
+  const snapshot = storageManager.getSnapshot(sessionManager?.getCurrentSession() ?? null);
+  const todaySeconds = storageManager.getTodayStats(snapshot).totalSeconds;
+  const tracking = activityTracker?.getStatus() ?? { state: 'no-editor' as const, language: null };
+  const statusLabel = formatTrackingStatus(tracking);
+  const icon = tracking.state === 'tracking' ? 'record' : 'debug-pause';
+  statusBarItem.text = `$(${icon}) ${statusLabel} · ${formatDurationShort(todaySeconds)} today`;
+  statusBarItem.tooltip = `CodeTime AI: ${statusLabel}\nClick to open dashboard`;
+  statusBarItem.accessibilityInformation = { label: `${statusLabel}, ${formatDurationShort(todaySeconds)} today` };
+
+  if (trackingControlItem) {
+    const isManuallyPaused = tracking.state === 'manual';
+    trackingControlItem.text = isManuallyPaused ? '$(play)' : '$(debug-pause)';
+    trackingControlItem.tooltip = isManuallyPaused ? 'Resume CodeTime tracking' : 'Pause CodeTime tracking';
+    trackingControlItem.accessibilityInformation = { label: trackingControlItem.tooltip };
+  }
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -41,7 +55,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const gitTracker = new GitTracker();
   const insightEngine = new InsightEngine(storageManager);
 
-  activityTracker = new ActivityTracker();
+  activityTracker = new ActivityTracker(Date.now(), context.workspaceState.get<boolean>('trackingPaused', false));
   sessionManager = new SessionManager(
     activityTracker,
     focusDetector,
@@ -50,29 +64,59 @@ export function activate(context: vscode.ExtensionContext): void {
     gitTracker,
   );
 
-  activityTracker.start();
   sessionManager.start();
-
-  // Treat window losing focus as inactivity
-  context.subscriptions.push(
-    vscode.window.onDidChangeWindowState((state) => {
-      if (!state.focused) {
-        sessionManager?.handleInactivity(Date.now());
-      }
-    }),
-  );
+  activityTracker.start();
 
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusBarItem.command = 'codetime-ai.openDashboard';
+  statusBarItem.name = 'CodeTime AI tracking status';
   statusBarItem.show();
+  trackingControlItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+  trackingControlItem.name = 'CodeTime AI pause or resume';
+  trackingControlItem.command = 'codetime-ai.toggleTracking';
+  trackingControlItem.show();
   updateStatusBar(storageManager);
+
+  context.subscriptions.push(activityTracker.onDidChangeStatus(() => {
+    updateStatusBar(storageManager);
+    DashboardPanel.refreshIfOpen();
+  }));
+
+  void vscode.commands.executeCommand(
+    'setContext', 'codetime-ai.trackingPaused', activityTracker.getStatus().state === 'manual',
+  );
+
+  const setTrackingPaused = async (paused: boolean): Promise<void> => {
+    if (paused) {
+      activityTracker?.pause();
+    } else {
+      activityTracker?.resume();
+    }
+    await context.workspaceState.update('trackingPaused', paused);
+    await vscode.commands.executeCommand('setContext', 'codetime-ai.trackingPaused', paused);
+  };
+  const pauseTrackingCommand = vscode.commands.registerCommand('codetime-ai.pauseTracking', () => setTrackingPaused(true));
+  const resumeTrackingCommand = vscode.commands.registerCommand('codetime-ai.resumeTracking', () => setTrackingPaused(false));
+  const toggleTrackingCommand = vscode.commands.registerCommand('codetime-ai.toggleTracking', () => {
+    return setTrackingPaused(activityTracker?.getStatus().state !== 'manual');
+  });
 
   statusBarUpdateTimer = setInterval(() => {
     updateStatusBar(storageManager);
+    DashboardPanel.refreshIfOpen();
   }, STATUS_BAR_UPDATE_INTERVAL_MS);
 
+  context.subscriptions.push(sessionManager.onDidEndSession(() => {
+    updateStatusBar(storageManager);
+    DashboardPanel.refreshIfOpen();
+  }));
+
   const openDashboard = (extensionUri: vscode.Uri) => {
-    DashboardPanel.show(extensionUri, storageManager, insightEngine);
+    DashboardPanel.show(
+      extensionUri, storageManager, insightEngine,
+      () => sessionManager?.getCurrentSession() ?? null,
+      () => activityTracker?.getStatus() ?? { state: 'no-editor', language: null },
+    );
   };
 
   const openDashboardCommand = vscode.commands.registerCommand('codetime-ai.openDashboard', () => {
@@ -141,7 +185,11 @@ export function activate(context: vscode.ExtensionContext): void {
     openSettingsCommand,
     exportJsonCommand,
     exportCsvCommand,
+    pauseTrackingCommand,
+    resumeTrackingCommand,
+    toggleTrackingCommand,
     statusBarItem,
+    trackingControlItem,
     {
       dispose: () => {
         if (statusBarUpdateTimer !== undefined) {
@@ -157,6 +205,7 @@ export function activate(context: vscode.ExtensionContext): void {
         sessionManager = undefined;
         activityTracker = undefined;
         statusBarItem = undefined;
+        trackingControlItem = undefined;
       },
     },
   );
@@ -174,4 +223,6 @@ export function deactivate(): void {
   activityTracker = undefined;
   statusBarItem?.dispose();
   statusBarItem = undefined;
+  trackingControlItem?.dispose();
+  trackingControlItem = undefined;
 }

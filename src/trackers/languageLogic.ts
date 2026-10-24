@@ -2,6 +2,8 @@ import { LanguageStats, SessionRecord } from '../storage/schema';
 
 /** Explicit display-name overrides for VS Code language ids. */
 export const LANGUAGE_DISPLAY_OVERRIDES: Record<string, string> = {
+  typescript: 'TypeScript',
+  javascript: 'JavaScript',
   cpp: 'C++',
   typescriptreact: 'TypeScript (React)',
   javascriptreact: 'JavaScript (React)',

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { SessionRecord } from '../storage/schema';
 import { StorageManager } from '../storage/StorageManager';
 import { notifyFocusSessionComplete, processDailyMilestones } from '../utils/notifications';
+import { ConfigManager } from '../utils/ConfigManager';
 import { calculateActiveSeconds, isFocusSession } from './focusLogic';
 import {
   PendingSession,
@@ -40,13 +41,15 @@ export class FocusDetector {
    * @returns Finalized session record with {@code isFocusSession} populated.
    */
   finalizeSession(session: PendingSession, endMs: number, branch: string): SessionRecord {
-    const pausedSession = pauseSession(session);
+    const pausedSession = pauseSession(session, endMs, ConfigManager.getInactivityTimeout() * 1000);
     const activeSeconds = calculateActiveSeconds(
       pausedSession.segments,
       pausedSession.currentSegmentStartMs,
       pausedSession.lastActiveMs,
     );
-    const qualifiesAsFocus = isFocusSession(activeSeconds, pausedSession.inactivityGapsMs);
+    const qualifiesAsFocus = isFocusSession(
+      activeSeconds, pausedSession.inactivityGapsMs, ConfigManager.getFocusSessionMinutes() * 60,
+    );
     const record = finalizeSessionRecord(pausedSession, endMs, qualifiesAsFocus, branch);
 
     if (qualifiesAsFocus) {
@@ -120,7 +123,9 @@ export class FocusDetector {
       session.lastActiveMs,
     );
 
-    return isFocusSession(activeSeconds, session.inactivityGapsMs);
+    return isFocusSession(
+      activeSeconds, session.inactivityGapsMs, ConfigManager.getFocusSessionMinutes() * 60,
+    );
   }
 
   /**

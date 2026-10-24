@@ -53,8 +53,12 @@ export function getMaxGapSeconds(gapsMs: number[]): number {
  * @param gapsMs - Inactivity gaps recorded during the session.
  * @returns True when the session meets focus criteria.
  */
-export function isFocusSession(activeSeconds: number, gapsMs: number[]): boolean {
-  if (activeSeconds < FOCUS_MIN_DURATION_SECONDS) {
+export function isFocusSession(
+  activeSeconds: number,
+  gapsMs: number[],
+  minimumSeconds: number = FOCUS_MIN_DURATION_SECONDS,
+): boolean {
+  if (activeSeconds < minimumSeconds) {
     return false;
   }
 

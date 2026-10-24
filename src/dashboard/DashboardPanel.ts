@@ -1,17 +1,21 @@
 import * as vscode from 'vscode';
 import { InsightEngine } from '../ai/InsightEngine';
 import { StorageManager } from '../storage/StorageManager';
+import { SessionRecord } from '../storage/schema';
 import { buildDashboardPayload } from './dashboardData';
+import { TrackingStatus, formatTrackingStatus } from '../core/trackingStatus';
 
 /** Webview message sent from the extension host to the dashboard. */
 interface DashboardUpdateMessage {
   type: 'update';
   data: ReturnType<typeof buildDashboardPayload>;
+  trackingStatus: TrackingStatus;
+  trackingStatusLabel: string;
 }
 
 /** Webview message sent from the dashboard to the extension host. */
 interface DashboardRequestMessage {
-  type: 'generateInsight' | 'refresh';
+  type: 'generateInsight' | 'refresh' | 'pauseTracking' | 'resumeTracking';
 }
 
 /**
@@ -31,11 +35,19 @@ export class DashboardPanel {
     private readonly panel: vscode.WebviewPanel,
     private readonly storageManager: StorageManager,
     private readonly insightEngine: InsightEngine,
+    private readonly getLiveSession: () => SessionRecord | null,
+    private readonly getTrackingStatus: () => TrackingStatus = () => ({ state: 'no-editor', language: null }),
   ) {
     this.panel.webview.html = this.getWebviewContent(this.panel.webview);
 
     this.panel.webview.onDidReceiveMessage(async (message: DashboardRequestMessage) => {
       if (message.type === 'refresh') {
+        this.sendData();
+        return;
+      }
+
+      if (message.type === 'pauseTracking' || message.type === 'resumeTracking') {
+        await vscode.commands.executeCommand(`codetime-ai.${message.type}`);
         this.sendData();
         return;
       }
@@ -70,6 +82,8 @@ export class DashboardPanel {
     extensionUri: vscode.Uri,
     storageManager: StorageManager,
     insightEngine: InsightEngine,
+    getLiveSession: () => SessionRecord | null = () => null,
+    getTrackingStatus: () => TrackingStatus = () => ({ state: 'no-editor', language: null }),
   ): DashboardPanel {
     if (DashboardPanel.currentPanel) {
       DashboardPanel.currentPanel.panel.reveal(vscode.ViewColumn.One);
@@ -88,7 +102,9 @@ export class DashboardPanel {
       },
     );
 
-    DashboardPanel.currentPanel = new DashboardPanel(panel, storageManager, insightEngine);
+    DashboardPanel.currentPanel = new DashboardPanel(
+      panel, storageManager, insightEngine, getLiveSession, getTrackingStatus,
+    );
     return DashboardPanel.currentPanel;
   }
 
@@ -114,11 +130,15 @@ export class DashboardPanel {
     const payload = buildDashboardPayload(
       this.storageManager,
       this.insightEngine.getLatestInsight(),
+      this.getLiveSession(),
     );
 
+    const trackingStatus = this.getTrackingStatus();
     const message: DashboardUpdateMessage = {
       type: 'update',
       data: payload,
+      trackingStatus,
+      trackingStatusLabel: formatTrackingStatus(trackingStatus),
     };
 
     void this.panel.webview.postMessage(message);
@@ -214,6 +234,7 @@ export class DashboardPanel {
       display: flex;
       align-items: center;
       gap: 14px;
+      flex-wrap: wrap;
     }
 
     .header-title h1 {
@@ -232,6 +253,49 @@ export class DashboardPanel {
       border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
       font-family: var(--stat-font);
       font-size: 0.95rem;
+    }
+
+    .tracking-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .tracking-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+
+    .tracking-badge::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+      flex: 0 0 auto;
+    }
+
+    .tracking-badge[data-state='tracking'] {
+      color: var(--success);
+    }
+
+    .tracking-badge[data-state='manual'] {
+      color: var(--warning);
+    }
+
+    .tracking-controls .button:focus-visible {
+      outline: 2px solid var(--vscode-focusBorder, var(--accent));
+      outline-offset: 3px;
+    }
+
+    .tracking-help {
+      margin: -8px 0 24px;
+      color: var(--text-muted);
+      font-size: 0.85rem;
     }
 
     .grid-two-col {
@@ -512,7 +576,13 @@ export class DashboardPanel {
         <h1>CodeTime AI</h1>
         <div class="streak-badge" id="streakBadge">🔥 0 day streak</div>
       </div>
+      <div class="tracking-controls">
+        <span class="tracking-badge" id="trackingStatus" role="status" aria-live="polite" data-state="no-editor">Paused · No editor</span>
+        <button class="button" id="toggleTrackingBtn" type="button" aria-label="Pause tracking">Pause</button>
+      </div>
     </header>
+
+    <p class="tracking-help">Totals include all folders. Time updates every second while tracking a code editor.</p>
 
     <div class="grid-two-col">
       <section class="left-col">
@@ -608,6 +678,12 @@ export class DashboardPanel {
     let languageChart;
     let weeklyChart;
     let trendChart;
+    let manuallyPaused = false;
+    let lastInsightJson;
+    let lastProjectsJson;
+    let lastSessionsJson;
+    let lastChartsJson;
+    let lastChartsUpdate = 0;
 
     const chartColors = [
       '#4e9af1', '#73c991', '#cca700', '#f48771', '#b180d7', '#89d185', '#6796e6'
@@ -753,6 +829,7 @@ export class DashboardPanel {
     }
 
     function renderCharts(data) {
+      if (typeof Chart === 'undefined') return;
       destroyCharts();
 
       const languageCtx = document.getElementById('languageChart');
@@ -768,7 +845,8 @@ export class DashboardPanel {
         data: {
           labels: languageData.map((item) => item.language),
           datasets: [{
-            data: languageData.map((item) => Math.round(item.seconds / 60)),
+            label: 'Seconds',
+            data: languageData.map((item) => item.seconds),
             backgroundColor: chartColors,
             borderWidth: 0
           }]
@@ -832,22 +910,58 @@ export class DashboardPanel {
       document.getElementById('statTotal').textContent = data.stats.total;
       document.getElementById('statFocus').textContent = String(data.stats.focusSessions);
       document.getElementById('peakHour').textContent = data.peakHour;
+      document.getElementById('goalBarFill').style.width = data.goal.percentage + '%';
+      document.getElementById('goalLabel').textContent = data.goal.label;
 
-      renderInsight(data.insight);
-      renderProjects(data.topProjects);
-      renderSessions(data.recentSessions);
-      renderCharts(data);
+      const insightJson = JSON.stringify(data.insight);
+      if (insightJson !== lastInsightJson) {
+        renderInsight(data.insight);
+        lastInsightJson = insightJson;
+      }
+      const projectsJson = JSON.stringify(data.topProjects);
+      if (projectsJson !== lastProjectsJson) {
+        renderProjects(data.topProjects);
+        lastProjectsJson = projectsJson;
+      }
+      const sessionsJson = JSON.stringify(data.recentSessions);
+      if (sessionsJson !== lastSessionsJson) {
+        renderSessions(data.recentSessions);
+        lastSessionsJson = sessionsJson;
+      }
+      // Stopwatch labels update each second; keep chart animations at a slower pace.
+      const chartsJson = JSON.stringify([data.languages, data.weeklyActivity, data.dailyTrend]);
+      const now = Date.now();
+      if (chartsJson !== lastChartsJson && (lastChartsJson === undefined || now - lastChartsUpdate >= 5000)) {
+        renderCharts(data);
+        lastChartsJson = chartsJson;
+        lastChartsUpdate = now;
+      }
+    }
+
+    function renderTrackingStatus(status, label) {
+      const badge = document.getElementById('trackingStatus');
+      if (badge.textContent !== label) badge.textContent = label;
+      badge.dataset.state = status.state;
+      manuallyPaused = status.state === 'manual';
+      const button = document.getElementById('toggleTrackingBtn');
+      button.textContent = manuallyPaused ? 'Resume' : 'Pause';
+      button.setAttribute('aria-label', manuallyPaused ? 'Resume tracking' : 'Pause tracking');
     }
 
     window.addEventListener('message', (event) => {
       const message = event.data;
       if (message.type === 'update') {
+        renderTrackingStatus(message.trackingStatus, message.trackingStatusLabel);
         renderDashboard(message.data);
       }
     });
 
     document.getElementById('generateInsightBtn').addEventListener('click', () => {
       vscode.postMessage({ type: 'generateInsight' });
+    });
+
+    document.getElementById('toggleTrackingBtn').addEventListener('click', () => {
+      vscode.postMessage({ type: manuallyPaused ? 'resumeTracking' : 'pauseTracking' });
     });
 
     vscode.postMessage({ type: 'refresh' });

@@ -3,13 +3,14 @@ import { SessionRecord } from '../storage/schema';
 import { GitTracker } from '../trackers/GitTracker';
 import { LanguageTracker } from '../trackers/LanguageTracker';
 import { ProjectTracker } from '../trackers/ProjectTracker';
+import { ConfigManager } from '../utils/ConfigManager';
 import { ActivityTracker } from './ActivityTracker';
 import { FocusDetector } from './FocusDetector';
 import {
   PendingSession,
   createPendingSession,
   generateSessionId,
-  pauseSession,
+  finalizeSessionRecord,
   recordActivityBurst,
 } from './sessionLogic';
 
@@ -40,6 +41,8 @@ export class SessionManager {
   private pendingSession: PendingSession | null = null;
   private readonly completedSessions: SessionRecord[] = [];
   private readonly disposables: vscode.Disposable[] = [];
+  private readonly _onDidEndSession = new vscode.EventEmitter<void>();
+  readonly onDidEndSession = this._onDidEndSession.event;
 
   /**
    * Creates a session manager wired to activity, focus, tracker, and storage services.
@@ -85,6 +88,7 @@ export class SessionManager {
   flush(): void {
     this.endCurrentSession(Date.now());
     this.stop();
+    this._onDidEndSession.dispose();
   }
 
   /**
@@ -122,12 +126,29 @@ export class SessionManager {
     return [...this.completedSessions];
   }
 
+  /** Returns elapsed activity for display without saving or ending the session. */
+  getCurrentSession(now: number = Date.now()): SessionRecord | null {
+    if (this.pendingSession === null) {
+      return null;
+    }
+    const endMs = Math.min(
+      now, this.pendingSession.lastActiveMs + ConfigManager.getInactivityTimeout() * 1000,
+    );
+    return finalizeSessionRecord(
+      this.pendingSession, endMs, false, '', ConfigManager.getInactivityTimeout() * 1000,
+    );
+  }
+
   /**
    * Handles a user activity event by starting or resuming a session.
    *
    * @param now - Timestamp of the activity event.
    */
   handleActivity(now: number): void {
+    const timeoutMs = ConfigManager.getInactivityTimeout() * 1000;
+    if (this.pendingSession !== null && now - this.pendingSession.lastActiveMs >= timeoutMs) {
+      this.endCurrentSession(now);
+    }
     if (this.pendingSession === null) {
       const projectContext = this.projectTracker.getProjectContext();
       this.pendingSession = createPendingSession(
@@ -140,7 +161,7 @@ export class SessionManager {
       return;
     }
 
-    this.pendingSession = recordActivityBurst(this.pendingSession, now);
+    this.pendingSession = recordActivityBurst(this.pendingSession, now, timeoutMs);
   }
 
   /**
@@ -153,7 +174,6 @@ export class SessionManager {
       return;
     }
 
-    this.pendingSession = pauseSession(this.pendingSession!);
     this.endCurrentSession(now);
   }
 
@@ -181,7 +201,10 @@ export class SessionManager {
     }
 
     const branch = this.gitTracker.getCurrentBranch();
-    const sessionRecord = this.focusDetector.finalizeSession(this.pendingSession, endMs, branch);
+    const activeEndMs = Math.min(
+      endMs, this.pendingSession.lastActiveMs + ConfigManager.getInactivityTimeout() * 1000,
+    );
+    const sessionRecord = this.focusDetector.finalizeSession(this.pendingSession, activeEndMs, branch);
 
     this.completedSessions.push(sessionRecord);
     this.pendingSession = null;
@@ -189,5 +212,6 @@ export class SessionManager {
     this.projectTracker.onSessionEnd(sessionRecord);
     this.languageTracker.onSessionEnd(sessionRecord);
     this.focusDetector.persistSession(sessionRecord);
+    this._onDidEndSession.fire();
   }
 }

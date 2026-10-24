@@ -1,7 +1,8 @@
-import { AIInsight, SessionRecord } from '../storage/schema';
+import { AIInsight, RootStorage, SessionRecord } from '../storage/schema';
 import { StorageManager } from '../storage/StorageManager';
 import { calculatePeakCodingHour } from '../ai/weeklyStats';
 import { formatDurationShort } from '../utils/timeUtils';
+import { ConfigManager } from '../utils/ConfigManager';
 
 /** Dashboard payload sent from the extension to the webview. */
 export interface DashboardPayload {
@@ -14,6 +15,12 @@ export interface DashboardPayload {
     week: string;
     total: string;
     focusSessions: number;
+  };
+  goal: {
+    todaySeconds: number;
+    targetSeconds: number;
+    percentage: number;
+    label: string;
   };
   peakHour: string;
   insight: AIInsight | null;
@@ -76,8 +83,8 @@ export function formatSessionDate(isoTimestamp: string): string {
 export function buildDailyTrend(
   storageManager: StorageManager,
   days: number = TREND_DAYS,
+  data: RootStorage = storageManager.read(),
 ): DashboardPayload['dailyTrend'] {
-  const data = storageManager.read();
   const trend: DashboardPayload['dailyTrend'] = [];
   const today = new Date();
 
@@ -91,7 +98,7 @@ export function buildDailyTrend(
     trend.push({
       date: dateKey,
       label: date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
-      hours: Math.round((totalSeconds / 3600) * 10) / 10,
+      hours: totalSeconds / 3600,
     });
   }
 
@@ -108,8 +115,8 @@ export function buildDailyTrend(
 export function getRecentSessions(
   storageManager: StorageManager,
   limit: number = 20,
+  data: RootStorage = storageManager.read(),
 ): DashboardPayload['recentSessions'] {
-  const data = storageManager.read();
   const sessions: SessionRecord[] = [];
 
   for (const daily of Object.values(data.daily)) {
@@ -129,7 +136,7 @@ export function getRecentSessions(
 }
 
 /**
- * Builds the dashboard payload from persisted storage.
+ * Builds the dashboard payload from persisted and in-progress activity.
  *
  * @param storageManager - Storage manager used to read stats and insights.
  * @param latestInsight - Latest AI insight, if available.
@@ -138,11 +145,13 @@ export function getRecentSessions(
 export function buildDashboardPayload(
   storageManager: StorageManager,
   latestInsight: AIInsight | null,
+  liveSession: SessionRecord | null = null,
 ): DashboardPayload {
-  const data = storageManager.read();
-  const weekStats = storageManager.getThisWeekStats();
-  const todayStats = storageManager.getTodayStats();
-  const streak = storageManager.getStreakData();
+  const data = storageManager.getSnapshot(liveSession);
+  const weekStats = storageManager.getThisWeekStats(data);
+  const todayStats = storageManager.getTodayStats(data);
+  const streak = data.streak;
+  const targetSeconds = Math.max(1, ConfigManager.getDailyGoalMinutes()) * 60;
 
   const weekSeconds = weekStats.reduce((sum, daily) => sum + daily.totalSeconds, 0);
   const totalSeconds = Object.values(data.daily).reduce(
@@ -182,15 +191,21 @@ export function buildDashboardPayload(
       total: formatDurationShort(totalSeconds),
       focusSessions,
     },
+    goal: {
+      todaySeconds: todayStats.totalSeconds,
+      targetSeconds,
+      percentage: Math.min(100, (todayStats.totalSeconds / targetSeconds) * 100),
+      label: `${formatDurationShort(todayStats.totalSeconds)} / ${formatDurationShort(targetSeconds)}`,
+    },
     peakHour: calculatePeakCodingHour(weekStats),
     insight: latestInsight,
     languages,
     weeklyActivity: weekStats.map((daily, index) => ({
       day: DAY_NAMES[index] ?? daily.date,
-      hours: Math.round((daily.totalSeconds / 3600) * 10) / 10,
+      hours: daily.totalSeconds / 3600,
     })),
-    dailyTrend: buildDailyTrend(storageManager),
+    dailyTrend: buildDailyTrend(storageManager, TREND_DAYS, data),
     topProjects,
-    recentSessions: getRecentSessions(storageManager),
+    recentSessions: getRecentSessions(storageManager, 20, data),
   };
 }

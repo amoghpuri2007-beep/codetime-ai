@@ -9,6 +9,8 @@ import {
   StreakData,
 } from './schema';
 import { applyStreakUpdate, computeEffectiveStreak } from './streakLogic';
+import { applyProjectSessionUpdate } from '../trackers/projectLogic';
+import { applyLanguageSessionUpdate } from '../trackers/languageLogic';
 
 export const STORAGE_VERSION = '1.0.0';
 const STORAGE_FILENAME = 'codetime-storage.json';
@@ -16,18 +18,20 @@ const STORAGE_FILENAME = 'codetime-storage.json';
 export class StorageManager {
   private readonly storageFilePath: string;
   private cached: RootStorage | null = null;
+  private cachedFileSignature: string | null | undefined;
 
   constructor(globalStorageUri: vscode.Uri) {
     this.storageFilePath = path.join(globalStorageUri.fsPath, STORAGE_FILENAME);
   }
 
   read(): RootStorage {
-    if (this.cached !== null) {
-      return this.cached;
-    }
-
     try {
-      if (!fs.existsSync(this.storageFilePath)) {
+      const signature = this.getFileSignature();
+      if (this.cached !== null && signature === this.cachedFileSignature) {
+        return this.cached;
+      }
+      this.cachedFileSignature = signature;
+      if (signature === null) {
         this.cached = this.getDefault();
         return this.cached;
       }
@@ -51,12 +55,32 @@ export class StorageManager {
   }
 
   write(data: RootStorage): void {
+    const temporaryPath = `${this.storageFilePath}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
     try {
       fs.mkdirSync(path.dirname(this.storageFilePath), { recursive: true });
-      fs.writeFileSync(this.storageFilePath, JSON.stringify(data, null, 2), 'utf8');
-      this.cached = data;
+      fs.writeFileSync(temporaryPath, JSON.stringify(data, null, 2), 'utf8');
+      fs.renameSync(temporaryPath, this.storageFilePath);
+      // Other windows may save between writes and reads; reload the latest file.
+      this.cached = null;
+      this.cachedFileSignature = undefined;
     } catch (error) {
       console.error('[CodeTime AI] Failed to write storage file.', error);
+      throw error;
+    } finally {
+      if (fs.existsSync(temporaryPath)) {
+        fs.unlinkSync(temporaryPath);
+      }
+    }
+  }
+
+  private getFileSignature(): string | null {
+    try {
+      const stat = fs.statSync(this.storageFilePath);
+      return `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return null;
+      }
       throw error;
     }
   }
@@ -77,6 +101,36 @@ export class StorageManager {
     };
   }
 
+  /** Returns display totals including live activity without persisting it. */
+  getSnapshot(liveSession: SessionRecord | null = null): RootStorage {
+    const stored = this.read();
+    const data: RootStorage = { ...stored, daily: { ...stored.daily } };
+    const alreadySaved = liveSession !== null && Object.values(stored.daily).some(
+      (daily) => daily.sessions.some((session) => session.id === liveSession.id),
+    );
+
+    if (liveSession !== null && liveSession.durationSeconds > 0 && !alreadySaved) {
+      const dateKey = this.getDateKey(liveSession.startTime);
+      const daily = data.daily[dateKey] ?? this.createEmptyDailyStats(dateKey);
+      data.daily[dateKey] = {
+        ...daily,
+        sessions: [...daily.sessions],
+        firedMilestones: [...daily.firedMilestones],
+      };
+      this.updateDailyStats(data, dateKey, liveSession);
+      data.projects = applyProjectSessionUpdate(stored.projects, liveSession);
+      data.languages = applyLanguageSessionUpdate(stored.languages, liveSession);
+    }
+
+    const today = this.getTodayDateKey();
+    data.streak = applyStreakUpdate(
+      computeEffectiveStreak(stored.streak, today),
+      today,
+      data.daily[today]?.totalSeconds ?? 0,
+    );
+    return data;
+  }
+
   /**
    * Persists a session into daily stats and updates streak tracking.
    *
@@ -95,8 +149,7 @@ export class StorageManager {
     this.write(data);
   }
 
-  getThisWeekStats(): DailyStats[] {
-    const data = this.read();
+  getThisWeekStats(data: RootStorage = this.read()): DailyStats[] {
     const weekStart = this.getStartOfWeek(new Date());
     const stats: DailyStats[] = [];
 
@@ -110,8 +163,7 @@ export class StorageManager {
     return stats;
   }
 
-  getTodayStats(): DailyStats {
-    const data = this.read();
+  getTodayStats(data: RootStorage = this.read()): DailyStats {
     const today = this.getTodayDateKey();
     return data.daily[today] ?? this.createEmptyDailyStats(today);
   }

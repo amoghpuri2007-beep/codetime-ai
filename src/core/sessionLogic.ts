@@ -1,7 +1,5 @@
 import { SessionRecord } from '../storage/schema';
-
-/** Minimum gap in milliseconds between keystrokes to start a new activity burst. */
-export const ACTIVITY_BURST_GAP_MS = 1_000;
+import { INACTIVITY_THRESHOLD_MS } from './activityLogic';
 
 /** A contiguous period of editor activity within a session. */
 export interface ActivitySegment {
@@ -69,7 +67,11 @@ export function createPendingSession(
  * @param now - Timestamp of the latest activity event.
  * @returns Updated pending session after applying the activity burst.
  */
-export function recordActivityBurst(session: PendingSession, now: number): PendingSession {
+export function recordActivityBurst(
+  session: PendingSession,
+  now: number,
+  inactivityThresholdMs: number = INACTIVITY_THRESHOLD_MS,
+): PendingSession {
   const nextSession: PendingSession = {
     ...session,
     segments: [...session.segments],
@@ -78,15 +80,15 @@ export function recordActivityBurst(session: PendingSession, now: number): Pendi
 
   const gapMs = now - nextSession.lastActiveMs;
 
-  if (nextSession.currentSegmentStartMs !== null && gapMs > ACTIVITY_BURST_GAP_MS) {
+  if (nextSession.currentSegmentStartMs !== null && gapMs >= inactivityThresholdMs) {
     nextSession.segments.push({
       startMs: nextSession.currentSegmentStartMs,
-      endMs: nextSession.lastActiveMs,
+      endMs: nextSession.lastActiveMs + inactivityThresholdMs,
     });
-    nextSession.inactivityGapsMs.push(gapMs);
+    nextSession.inactivityGapsMs.push(gapMs - inactivityThresholdMs);
     nextSession.currentSegmentStartMs = now;
   } else if (nextSession.currentSegmentStartMs === null) {
-    if (gapMs > ACTIVITY_BURST_GAP_MS) {
+    if (gapMs >= inactivityThresholdMs) {
       nextSession.inactivityGapsMs.push(gapMs);
     }
     nextSession.currentSegmentStartMs = now;
@@ -102,12 +104,19 @@ export function recordActivityBurst(session: PendingSession, now: number): Pendi
  * @param session - Current pending session.
  * @returns Updated pending session with the active segment closed.
  */
-export function pauseSession(session: PendingSession): PendingSession {
+export function pauseSession(
+  session: PendingSession,
+  now: number = session.lastActiveMs,
+  inactivityThresholdMs: number = INACTIVITY_THRESHOLD_MS,
+): PendingSession {
   if (session.currentSegmentStartMs === null) {
     return session;
   }
 
-  const endMs = session.lastActiveMs;
+  const endMs = Math.max(
+    session.lastActiveMs,
+    Math.min(now, session.lastActiveMs + inactivityThresholdMs),
+  );
   return {
     ...session,
     segments: [
@@ -158,8 +167,9 @@ export function finalizeSessionRecord(
   endMs: number,
   isFocusSession: boolean,
   branch: string,
+  inactivityThresholdMs: number = INACTIVITY_THRESHOLD_MS,
 ): SessionRecord {
-  const pausedSession = pauseSession(session);
+  const pausedSession = pauseSession(session, endMs, inactivityThresholdMs);
   const durationSeconds = Math.round(
     calculateActiveDurationMs(
       pausedSession.segments,
